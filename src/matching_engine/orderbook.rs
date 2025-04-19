@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use rust_decimal::Decimal;
 
 #[derive(Debug)]
 pub enum BidOrAsk {
@@ -8,8 +9,8 @@ pub enum BidOrAsk {
 
 #[derive(Debug)]
 pub struct OrderBook {
-    asks: HashMap<Price, Limit>,
-    bids: HashMap<Price, Limit>,
+    asks: HashMap<Decimal, Limit>,
+    bids: HashMap<Decimal, Limit>,
 }
 
 impl OrderBook {
@@ -21,10 +22,23 @@ impl OrderBook {
     }
 
     pub fn fill_market_order(&mut self, market_order: &mut Order) {
+        let limits = match market_order.bid_or_ask {
+            BidOrAsk::Bid => self.ask_limits(),
+            BidOrAsk::Ask => self.bid_limits(),
+        };
+
+        for limit_order in limits {
+            limit_order.fill_order(market_order);
+
+            if market_order.is_filled() {
+                break;
+            }
+        }
+
         match market_order.bid_or_ask {
             BidOrAsk::Bid => {
                 for limit_order in self.ask_limits() {
-                    limit_order.fill_order(market_order)
+                    limit_order.fill_order(market_order);
 
                     if market_order.is_filled() {
                         break;
@@ -35,18 +49,23 @@ impl OrderBook {
         }
     }
 
-    // TODO: Sorting!!
     pub fn ask_limits(&mut self) -> Vec<&mut Limit> {
-        self.asks.values_mut().collect::<Vec<&mut Limit>>()
+        let mut limits = self.asks.values_mut().collect::<Vec<&mut Limit>>();
+
+        limits.sort_by(|a, b| a.price.cmp(&b.price));
+
+        limits
     }
 
     pub fn bid_limits(&mut self) -> Vec<&mut Limit> {
-        self.bids.values_mut().collect::<Vec<&mut Limit>>()
+       let mut bids = self.bids.values_mut().collect::<Vec<&mut Limit>>();
+
+        bids.sort_by(|a, b| b.price.cmp(&a.price));
+
+        bids
     }
 
-    pub fn add_order(&mut self, price: f64, order: Order) {
-        let price = Price::new(price);
-
+    pub fn add_limit_order(&mut self, price: Decimal, order: Order) {
         match order.bid_or_ask {
             BidOrAsk::Bid => {
                 match self.bids.get_mut(&price) {
@@ -76,35 +95,14 @@ impl OrderBook {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
-pub struct Price {
-    integral: u64,
-    fractional: u64,
-    scaler: u64,
-}
-
-impl Price {
-    pub fn new(price: f64) -> Self {
-        let scaler = 100000;
-        let integral = price as u64;
-        let fractional = ((price % 1.0) * scaler as f64) as u64;
-
-        Price {
-            integral,
-            fractional,
-            scaler,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Limit {
-    price: Price,
+    price: Decimal,
     orders: Vec<Order>,
 }
 
 impl Limit {
-    pub fn new(price: Price) -> Self {
+    pub fn new(price: Decimal) -> Self {
         Limit {
             price,
             orders: Vec::new(),
@@ -161,10 +159,32 @@ impl Order {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use rust_decimal::dec;
+
+    #[test]
+    fn orderbook_fill_market_order_ask() {
+        let mut orderbook = OrderBook::new();
+        orderbook.add_limit_order(dec!(500), Order::new(BidOrAsk::Ask, 10.0));
+        orderbook.add_limit_order(dec!(100), Order::new(BidOrAsk::Ask, 10.0));
+        orderbook.add_limit_order(dec!(200), Order::new(BidOrAsk::Ask, 10.0));
+        orderbook.add_limit_order(dec!(300), Order::new(BidOrAsk::Ask, 10.0));
+
+        let mut market_order = Order::new(BidOrAsk::Bid, 10.0);
+        orderbook.fill_market_order(&mut market_order);
+
+
+        let ask_limits = orderbook.ask_limits();
+        let matched_limit = ask_limits.get(0).unwrap();
+        assert_eq!(matched_limit.price, dec!(100));
+        assert_eq!(market_order.is_filled(), true);
+
+        let matched_order = matched_limit.orders.get(0).unwrap();
+        assert_eq!(matched_order.is_filled(), true);
+    }
 
     #[test]
     fn limit_total_volume() {
-        let price = Price::new(10000.0);
+        let price = dec!(10000.0);
         let mut limit = Limit::new(price);
         let buy_limit_order_a = Order::new(BidOrAsk::Bid, 100.0);
         let buy_limit_order_b = Order::new(BidOrAsk::Bid, 100.0);
@@ -177,7 +197,7 @@ pub mod tests {
 
     #[test]
     fn limit_order_fill() {
-        let price = Price::new(10000.0);
+        let price = dec!(10000.0);
         let mut limit = Limit::new(price);
 
         let buy_limit_order_a = Order::new(BidOrAsk::Bid, 100.0);
@@ -196,7 +216,7 @@ pub mod tests {
 
     #[test]
     fn limit_order_single_fill() {
-        let price = Price::new(10000.0);
+        let price = dec!(10000.0);
         let mut limit = Limit::new(price);
 
         let buy_limit_order = Order::new(BidOrAsk::Bid, 100.0);
